@@ -1,0 +1,28 @@
+[package]
+name = "scry-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Event protocol for Scry SQL proxy - FlexBuffers serialization for query events"
+repository = "https://github.com/your-org/scry"
+keywords = ["sql", "proxy", "observability", "flatbuffers", "events"]
+categories = ["database", "encoding"]
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+flexbuffers = { workspace = true }
+
+# Event IDs and timestamps
+uuid = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[features]
+default = []
