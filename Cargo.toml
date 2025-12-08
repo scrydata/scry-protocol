@@ -1,3 +1,29 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = []
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+flexbuffers = "2.0"
+flatbuffers = "24.3"
+
+# Event IDs and timestamps
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Dev dependencies
+serde_json = "1.0"
+
 [package]
 name = "scry-protocol"
 version.workspace = true
@@ -13,6 +39,7 @@ categories = ["database", "encoding"]
 # Serialization
 serde = { workspace = true }
 flexbuffers = { workspace = true }
+flatbuffers = { workspace = true }
 
 # Event IDs and timestamps
 uuid = { workspace = true }

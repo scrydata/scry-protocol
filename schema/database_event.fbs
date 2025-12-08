@@ -1,0 +1,210 @@
+// FlatBuffers schema for DatabaseEvent
+// Unified format for database replication events (COPY, CDC, proxy)
+//
+// Key design: Store PostgreSQL binary format bytes directly in ColumnValue.data
+// to enable zero-copy for high-throughput COPY path.
+
+namespace scry.events;
+
+// Type tag for fast dispatch without parsing OID
+// Maps to PostgreSQL type categories
+enum TypeTag : byte {
+  // Special
+  Null = 0,
+
+  // Basic types
+  Bool = 1,
+  Int16 = 2,
+  Int32 = 3,
+  Int64 = 4,
+  Float32 = 5,
+  Float64 = 6,
+  Text = 7,
+  Bytea = 8,
+
+  // JSON types
+  Json = 9,
+  Jsonb = 10,
+
+  // Other common types
+  Uuid = 11,
+  Timestamp = 12,
+  TimestampTz = 13,
+  Date = 14,
+  Time = 15,
+  TimeTz = 16,
+  Interval = 17,
+  Numeric = 18,
+
+  // Bit types
+  Bit = 20,
+  Varbit = 21,
+
+  // Geometric types
+  Point = 30,
+  Line = 31,
+  Lseg = 32,
+  Box = 33,
+  Path = 34,
+  Polygon = 35,
+  Circle = 36,
+
+  // Network types
+  Inet = 40,
+  Cidr = 41,
+  MacAddr = 42,
+  MacAddr8 = 43,
+
+  // Range types
+  Int4Range = 50,
+  Int8Range = 51,
+  NumRange = 52,
+  TsRange = 53,
+  TsTzRange = 54,
+  DateRange = 55,
+
+  // Money
+  Money = 60,
+
+  // XML
+  Xml = 61,
+
+  // Arrays (element type encoded in type_oid)
+  Array = 100,
+
+  // Extension point for custom/unknown types
+  Custom = 127
+}
+
+// Database operation type
+enum OperationType : byte {
+  // DML operations
+  Insert = 0,
+  Update = 1,
+  Delete = 2,
+  Truncate = 3,
+
+  // Transaction boundaries
+  Begin = 10,
+  Commit = 11,
+  Rollback = 12,
+
+  // Snapshot markers (for COPY rows)
+  SnapshotRow = 20,
+  SnapshotBegin = 21,
+  SnapshotEnd = 22
+}
+
+// PostgreSQL replica identity setting
+enum ReplicaIdentity : byte {
+  Default = 0,   // 'd' - Use primary key
+  Nothing = 1,   // 'n' - No old row data
+  Full = 2,      // 'f' - Full old row
+  Index = 3      // 'i' - Use specific index
+}
+
+// A single column value
+// Uses raw PostgreSQL binary format bytes for zero-copy efficiency
+table ColumnValue {
+  // Type tag for fast dispatch
+  type_tag: TypeTag;
+
+  // PostgreSQL type OID (for arrays, custom types, and disambiguation)
+  type_oid: uint32;
+
+  // Raw PostgreSQL binary format bytes
+  // NULL is represented by absence of this field (data == null)
+  data: [ubyte];
+}
+
+// A row of column values
+table Row {
+  values: [ColumnValue];
+}
+
+// Column metadata
+table ColumnMeta {
+  // Column name
+  name: string (required);
+
+  // PostgreSQL type OID
+  type_oid: uint32;
+
+  // Type modifier (e.g., varchar length, numeric precision)
+  type_modifier: int32;
+
+  // Whether this column is part of the key (for UPDATE/DELETE identification)
+  is_key: bool;
+}
+
+// Relation (table) metadata
+// Sent once per table, then referenced by rel_id in events
+table RelationMeta {
+  // Relation ID (PostgreSQL OID)
+  rel_id: uint32;
+
+  // Schema name
+  schema: string;
+
+  // Table name
+  table: string;
+
+  // Column definitions
+  columns: [ColumnMeta];
+
+  // Replica identity setting
+  replica_identity: ReplicaIdentity;
+}
+
+// A single database event
+table DatabaseEvent {
+  // Unique event identifier (UUID v4)
+  event_id: string;
+
+  // Event timestamp (Unix timestamp in microseconds)
+  timestamp_us: uint64;
+
+  // Operation type
+  operation: OperationType;
+
+  // Table reference (inline for small messages)
+  schema: string;
+  table: string;
+
+  // Replication position (PostgreSQL LSN as u64)
+  position: uint64;
+
+  // Transaction ID
+  transaction_id: uint64;
+
+  // New row data (for INSERT, UPDATE, SnapshotRow)
+  new_row: Row;
+
+  // Old row data (for UPDATE with REPLICA IDENTITY FULL, DELETE)
+  old_row: Row;
+
+  // Column names in order (can be omitted if RelationMeta was sent)
+  columns: [string];
+
+  // Relation metadata (sent once per table per stream)
+  // Present only when relation is first seen or changed
+  relation_meta: RelationMeta;
+}
+
+// Batch of events for efficient transport
+table DatabaseEventBatch {
+  // Events in this batch
+  events: [DatabaseEvent] (required);
+
+  // Source identifier (proxy/connector ID)
+  source_id: string;
+
+  // Batch sequence number (for ordering/deduplication)
+  batch_seq: uint64;
+
+  // Cached relation metadata for this batch
+  // Events reference by rel_id instead of embedding full metadata
+  relations: [RelationMeta];
+}
+
+root_type DatabaseEventBatch;

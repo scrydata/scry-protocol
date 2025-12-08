@@ -56,6 +56,7 @@
 mod event;
 mod serializer;
 mod deserializer;
+pub mod database_event;
 
 pub use event::{QueryEvent, QueryEventBuilder};
 pub use serializer::FlatBuffersSerializer;
