@@ -70,6 +70,12 @@ pub enum TypeTag {
     // Arrays (element type encoded in type_oid)
     Array = 100,
 
+    // Special marker for unchanged TOAST values in UPDATE operations.
+    // When a column has a large TOAST value that wasn't modified, PostgreSQL
+    // sends this marker instead of the value. The target should exclude these
+    // columns from the UPDATE SET clause.
+    ToastUnchanged = 126,
+
     // Extension point for custom/unknown types
     Custom = 127,
 }
@@ -119,6 +125,7 @@ impl TypeTag {
             60 => Some(Self::Money),
             61 => Some(Self::Xml),
             100 => Some(Self::Array),
+            126 => Some(Self::ToastUnchanged),
             127 => Some(Self::Custom),
             _ => None,
         }
@@ -144,6 +151,11 @@ pub enum OperationType {
     SnapshotRow = 20,
     SnapshotBegin = 21,
     SnapshotEnd = 22,
+
+    // Control directives (for coordinating producer/receiver behavior)
+    SequenceSync = 30,
+    DisableForeignKeys = 31,
+    EnableForeignKeys = 32,
 }
 
 impl OperationType {
@@ -160,8 +172,19 @@ impl OperationType {
             20 => Some(Self::SnapshotRow),
             21 => Some(Self::SnapshotBegin),
             22 => Some(Self::SnapshotEnd),
+            30 => Some(Self::SequenceSync),
+            31 => Some(Self::DisableForeignKeys),
+            32 => Some(Self::EnableForeignKeys),
             _ => None,
         }
+    }
+
+    /// Check if this is a control directive (not a data operation).
+    pub fn is_control_directive(&self) -> bool {
+        matches!(
+            self,
+            Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys
+        )
     }
 }
 
@@ -178,6 +201,9 @@ impl std::fmt::Display for OperationType {
             Self::SnapshotRow => write!(f, "SNAPSHOT_ROW"),
             Self::SnapshotBegin => write!(f, "SNAPSHOT_BEGIN"),
             Self::SnapshotEnd => write!(f, "SNAPSHOT_END"),
+            Self::SequenceSync => write!(f, "SEQUENCE_SYNC"),
+            Self::DisableForeignKeys => write!(f, "DISABLE_FOREIGN_KEYS"),
+            Self::EnableForeignKeys => write!(f, "ENABLE_FOREIGN_KEYS"),
         }
     }
 }
@@ -216,6 +242,95 @@ impl ReplicaIdentity {
     }
 }
 
+/// A PostgreSQL sequence value for synchronization.
+///
+/// Used to transmit current sequence state from source to target
+/// so that sequences can be synchronized after snapshot completion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SequenceValue {
+    /// Schema name containing the sequence.
+    pub schema: String,
+
+    /// Sequence name.
+    pub name: String,
+
+    /// Current last_value from pg_sequences.
+    pub last_value: i64,
+
+    /// Whether setval's is_called parameter should be true.
+    /// If true: next nextval() returns last_value + increment_by
+    /// If false: next nextval() returns last_value
+    pub is_called: bool,
+
+    /// Increment value for this sequence.
+    pub increment_by: i64,
+
+    /// Minimum value for this sequence.
+    pub min_value: i64,
+
+    /// Maximum value for this sequence.
+    pub max_value: i64,
+}
+
+impl SequenceValue {
+    /// Create a new sequence value.
+    pub fn new(
+        schema: impl Into<String>,
+        name: impl Into<String>,
+        last_value: i64,
+    ) -> Self {
+        Self {
+            schema: schema.into(),
+            name: name.into(),
+            last_value,
+            is_called: true,
+            increment_by: 1,
+            min_value: 1,
+            max_value: i64::MAX,
+        }
+    }
+
+    /// Get the fully qualified sequence name.
+    pub fn qualified_name(&self) -> String {
+        format!("{}.{}", self.schema, self.name)
+    }
+}
+
+/// Control directive for coordinating producer/receiver behavior.
+///
+/// Control directives are sent as special batches to signal the receiver
+/// to perform administrative operations like disabling/enabling constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ControlDirective {
+    /// Disable foreign key constraints on the target.
+    /// The receiver should:
+    /// 1. Query all FK constraints
+    /// 2. Store definitions in _scry_admin.foreign_keys
+    /// 3. Drop all FK constraints
+    DisableForeignKeys,
+
+    /// Enable foreign key constraints on the target.
+    /// The receiver should:
+    /// 1. Read FK definitions from _scry_admin.foreign_keys
+    /// 2. Recreate all FK constraints
+    /// 3. Clean up the admin table
+    EnableForeignKeys,
+
+    /// Synchronize sequence values.
+    /// The batch will contain sequence_values with the current state.
+    SyncSequences,
+}
+
+impl std::fmt::Display for ControlDirective {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DisableForeignKeys => write!(f, "DISABLE_FOREIGN_KEYS"),
+            Self::EnableForeignKeys => write!(f, "ENABLE_FOREIGN_KEYS"),
+            Self::SyncSequences => write!(f, "SYNC_SEQUENCES"),
+        }
+    }
+}
+
 /// A single column value.
 /// Uses raw PostgreSQL binary format bytes for zero-copy efficiency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,9 +365,25 @@ impl ColumnValue {
         }
     }
 
+    /// Create a marker for an unchanged TOAST value.
+    /// Used in UPDATE operations when a large column value was not modified.
+    /// The type_oid is preserved so the target knows the column's type.
+    pub fn unchanged(type_oid: u32) -> Self {
+        Self {
+            type_tag: TypeTag::ToastUnchanged,
+            type_oid,
+            data: None,
+        }
+    }
+
     /// Check if this value is NULL.
     pub fn is_null(&self) -> bool {
-        self.data.is_none()
+        self.data.is_none() && self.type_tag == TypeTag::Null
+    }
+
+    /// Check if this value is an unchanged TOAST marker.
+    pub fn is_unchanged(&self) -> bool {
+        self.type_tag == TypeTag::ToastUnchanged
     }
 
     /// Get the raw data bytes.
@@ -415,6 +546,17 @@ pub struct DatabaseEventBatch {
 
     /// Cached relation metadata for this batch.
     pub relations: Vec<RelationMeta>,
+
+    /// Control directive for this batch (if a control batch).
+    /// When present, this batch signals the receiver to perform
+    /// an administrative operation rather than applying data changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_directive: Option<ControlDirective>,
+
+    /// Sequence values for synchronization.
+    /// Present when control_directive is SyncSequences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_values: Option<Vec<SequenceValue>>,
 }
 
 impl DatabaseEventBatch {
@@ -425,6 +567,8 @@ impl DatabaseEventBatch {
             source_id: None,
             batch_seq: 0,
             relations: Vec::new(),
+            control_directive: None,
+            sequence_values: None,
         }
     }
 
@@ -435,6 +579,32 @@ impl DatabaseEventBatch {
             source_id: None,
             batch_seq: 0,
             relations: Vec::new(),
+            control_directive: None,
+            sequence_values: None,
+        }
+    }
+
+    /// Create a control batch that signals an administrative operation.
+    pub fn control(directive: ControlDirective) -> Self {
+        Self {
+            events: Vec::new(),
+            source_id: None,
+            batch_seq: 0,
+            relations: Vec::new(),
+            control_directive: Some(directive),
+            sequence_values: None,
+        }
+    }
+
+    /// Create a sequence sync control batch with sequence values.
+    pub fn sequence_sync(sequences: Vec<SequenceValue>) -> Self {
+        Self {
+            events: Vec::new(),
+            source_id: None,
+            batch_seq: 0,
+            relations: Vec::new(),
+            control_directive: Some(ControlDirective::SyncSequences),
+            sequence_values: Some(sequences),
         }
     }
 
@@ -448,6 +618,23 @@ impl DatabaseEventBatch {
     pub fn with_batch_seq(mut self, seq: u64) -> Self {
         self.batch_seq = seq;
         self
+    }
+
+    /// Set the control directive.
+    pub fn with_control_directive(mut self, directive: ControlDirective) -> Self {
+        self.control_directive = Some(directive);
+        self
+    }
+
+    /// Set sequence values.
+    pub fn with_sequence_values(mut self, sequences: Vec<SequenceValue>) -> Self {
+        self.sequence_values = Some(sequences);
+        self
+    }
+
+    /// Check if this is a control batch (no data events, just a directive).
+    pub fn is_control_batch(&self) -> bool {
+        self.control_directive.is_some()
     }
 
     /// Estimate the size of this batch in bytes.
@@ -477,6 +664,7 @@ mod tests {
             TypeTag::Text,
             TypeTag::Uuid,
             TypeTag::Array,
+            TypeTag::ToastUnchanged,
             TypeTag::Custom,
         ] {
             let byte = tag as u8;
@@ -506,7 +694,17 @@ mod tests {
     fn test_column_value_null() {
         let null = ColumnValue::null();
         assert!(null.is_null());
+        assert!(!null.is_unchanged());
         assert_eq!(null.as_bytes(), None);
+    }
+
+    #[test]
+    fn test_column_value_unchanged() {
+        let unchanged = ColumnValue::unchanged(25); // TEXT type OID
+        assert!(!unchanged.is_null());
+        assert!(unchanged.is_unchanged());
+        assert_eq!(unchanged.type_oid, 25);
+        assert_eq!(unchanged.as_bytes(), None);
     }
 
     #[test]
@@ -534,5 +732,77 @@ mod tests {
 
         assert_eq!(batch.source_id, Some("test-source".to_string()));
         assert_eq!(batch.batch_seq, 42);
+        assert!(!batch.is_control_batch());
+    }
+
+    #[test]
+    fn test_operation_type_control_directives() {
+        // Test control directive operation types
+        assert_eq!(OperationType::SequenceSync.to_string(), "SEQUENCE_SYNC");
+        assert_eq!(OperationType::DisableForeignKeys.to_string(), "DISABLE_FOREIGN_KEYS");
+        assert_eq!(OperationType::EnableForeignKeys.to_string(), "ENABLE_FOREIGN_KEYS");
+
+        // Test from_byte roundtrip
+        assert_eq!(OperationType::from_byte(30), Some(OperationType::SequenceSync));
+        assert_eq!(OperationType::from_byte(31), Some(OperationType::DisableForeignKeys));
+        assert_eq!(OperationType::from_byte(32), Some(OperationType::EnableForeignKeys));
+
+        // Test is_control_directive
+        assert!(OperationType::SequenceSync.is_control_directive());
+        assert!(OperationType::DisableForeignKeys.is_control_directive());
+        assert!(OperationType::EnableForeignKeys.is_control_directive());
+        assert!(!OperationType::Insert.is_control_directive());
+        assert!(!OperationType::SnapshotRow.is_control_directive());
+    }
+
+    #[test]
+    fn test_sequence_value() {
+        let seq = SequenceValue::new("public", "users_id_seq", 100);
+        assert_eq!(seq.schema, "public");
+        assert_eq!(seq.name, "users_id_seq");
+        assert_eq!(seq.last_value, 100);
+        assert!(seq.is_called);
+        assert_eq!(seq.increment_by, 1);
+        assert_eq!(seq.qualified_name(), "public.users_id_seq");
+    }
+
+    #[test]
+    fn test_control_directive_display() {
+        assert_eq!(ControlDirective::DisableForeignKeys.to_string(), "DISABLE_FOREIGN_KEYS");
+        assert_eq!(ControlDirective::EnableForeignKeys.to_string(), "ENABLE_FOREIGN_KEYS");
+        assert_eq!(ControlDirective::SyncSequences.to_string(), "SYNC_SEQUENCES");
+    }
+
+    #[test]
+    fn test_control_batch() {
+        let batch = DatabaseEventBatch::control(ControlDirective::DisableForeignKeys)
+            .with_source_id("backfill-001")
+            .with_batch_seq(1);
+
+        assert!(batch.is_control_batch());
+        assert_eq!(batch.control_directive, Some(ControlDirective::DisableForeignKeys));
+        assert!(batch.events.is_empty());
+        assert!(batch.sequence_values.is_none());
+    }
+
+    #[test]
+    fn test_sequence_sync_batch() {
+        let sequences = vec![
+            SequenceValue::new("public", "users_id_seq", 100),
+            SequenceValue::new("public", "orders_id_seq", 500),
+        ];
+
+        let batch = DatabaseEventBatch::sequence_sync(sequences)
+            .with_source_id("backfill-001")
+            .with_batch_seq(99);
+
+        assert!(batch.is_control_batch());
+        assert_eq!(batch.control_directive, Some(ControlDirective::SyncSequences));
+        assert!(batch.events.is_empty());
+
+        let seq_values = batch.sequence_values.as_ref().unwrap();
+        assert_eq!(seq_values.len(), 2);
+        assert_eq!(seq_values[0].qualified_name(), "public.users_id_seq");
+        assert_eq!(seq_values[1].last_value, 500);
     }
 }

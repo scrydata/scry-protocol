@@ -220,6 +220,8 @@ impl BatchBuilder {
             source_id: self.source_id.clone(),
             batch_seq: self.batch_seq,
             relations: std::mem::take(&mut self.relations),
+            control_directive: None,
+            sequence_values: None,
         };
 
         self.batch_seq += 1;
