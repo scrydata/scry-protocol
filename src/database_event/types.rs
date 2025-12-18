@@ -159,6 +159,9 @@ pub enum OperationType {
 
     // DDL operations
     Ddl = 33,
+
+    // DDL phase completed (control event from scry-backfill)
+    DdlComplete = 34,
 }
 
 impl OperationType {
@@ -179,6 +182,7 @@ impl OperationType {
             31 => Some(Self::DisableForeignKeys),
             32 => Some(Self::EnableForeignKeys),
             33 => Some(Self::Ddl),
+            34 => Some(Self::DdlComplete),
             _ => None,
         }
     }
@@ -214,6 +218,7 @@ impl std::fmt::Display for OperationType {
             Self::DisableForeignKeys => write!(f, "DISABLE_FOREIGN_KEYS"),
             Self::EnableForeignKeys => write!(f, "ENABLE_FOREIGN_KEYS"),
             Self::Ddl => write!(f, "DDL"),
+            Self::DdlComplete => write!(f, "DDL_COMPLETE"),
         }
     }
 }
