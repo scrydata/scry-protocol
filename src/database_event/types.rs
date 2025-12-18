@@ -156,6 +156,9 @@ pub enum OperationType {
     SequenceSync = 30,
     DisableForeignKeys = 31,
     EnableForeignKeys = 32,
+
+    // DDL operations
+    Ddl = 33,
 }
 
 impl OperationType {
@@ -175,6 +178,7 @@ impl OperationType {
             30 => Some(Self::SequenceSync),
             31 => Some(Self::DisableForeignKeys),
             32 => Some(Self::EnableForeignKeys),
+            33 => Some(Self::Ddl),
             _ => None,
         }
     }
@@ -185,6 +189,11 @@ impl OperationType {
             self,
             Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys
         )
+    }
+
+    /// Check if this is a DDL operation.
+    pub fn is_ddl(&self) -> bool {
+        matches!(self, Self::Ddl)
     }
 }
 
@@ -204,6 +213,7 @@ impl std::fmt::Display for OperationType {
             Self::SequenceSync => write!(f, "SEQUENCE_SYNC"),
             Self::DisableForeignKeys => write!(f, "DISABLE_FOREIGN_KEYS"),
             Self::EnableForeignKeys => write!(f, "ENABLE_FOREIGN_KEYS"),
+            Self::Ddl => write!(f, "DDL"),
         }
     }
 }
@@ -508,6 +518,16 @@ pub struct DatabaseEvent {
 
     /// Relation metadata (sent once per table per stream).
     pub relation_meta: Option<RelationMeta>,
+
+    /// DDL SQL statement (when operation == Ddl).
+    /// Contains the full CREATE/ALTER/DROP statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ddl_sql: Option<String>,
+
+    /// DDL object type for filtering/logging.
+    /// e.g., "extension", "table", "index", "constraint", "function", "trigger"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ddl_object_type: Option<String>,
 }
 
 impl DatabaseEvent {

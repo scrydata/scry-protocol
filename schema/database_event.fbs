@@ -92,7 +92,15 @@ enum OperationType : byte {
   // Snapshot markers (for COPY rows)
   SnapshotRow = 20,
   SnapshotBegin = 21,
-  SnapshotEnd = 22
+  SnapshotEnd = 22,
+
+  // Control directives (for coordinating producer/receiver behavior)
+  SequenceSync = 30,
+  DisableForeignKeys = 31,
+  EnableForeignKeys = 32,
+
+  // DDL operations
+  Ddl = 33
 }
 
 // PostgreSQL replica identity setting
@@ -189,6 +197,13 @@ table DatabaseEvent {
   // Relation metadata (sent once per table per stream)
   // Present only when relation is first seen or changed
   relation_meta: RelationMeta;
+
+  // DDL SQL statement (when operation == Ddl)
+  // Contains the full CREATE/ALTER/DROP statement
+  ddl_sql: string;
+
+  // DDL object type for filtering/logging (e.g., "table", "index", "extension")
+  ddl_object_type: string;
 }
 
 // Batch of events for efficient transport

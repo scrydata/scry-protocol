@@ -24,6 +24,8 @@ impl DatabaseEventBuilder {
                 old_row: None,
                 columns: Vec::new(),
                 relation_meta: None,
+                ddl_sql: None,
+                ddl_object_type: None,
             },
         }
     }
@@ -56,6 +58,14 @@ impl DatabaseEventBuilder {
     /// Create a builder for COMMIT transaction.
     pub fn commit() -> Self {
         Self::new(OperationType::Commit, "", "")
+    }
+
+    /// Create a builder for a DDL event.
+    pub fn ddl(sql: impl Into<String>, object_type: impl Into<String>) -> Self {
+        let mut builder = Self::new(OperationType::Ddl, "", "");
+        builder.event.ddl_sql = Some(sql.into());
+        builder.event.ddl_object_type = Some(object_type.into());
+        builder
     }
 
     /// Set the event ID.
