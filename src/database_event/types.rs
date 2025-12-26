@@ -162,6 +162,10 @@ pub enum OperationType {
 
     // DDL phase completed (control event from scry-backfill)
     DdlComplete = 34,
+
+    // Backfill phase completed (control event from scry-backfill)
+    // Contains table statistics for verification
+    BackfillComplete = 35,
 }
 
 impl OperationType {
@@ -183,6 +187,7 @@ impl OperationType {
             32 => Some(Self::EnableForeignKeys),
             33 => Some(Self::Ddl),
             34 => Some(Self::DdlComplete),
+            35 => Some(Self::BackfillComplete),
             _ => None,
         }
     }
@@ -191,7 +196,7 @@ impl OperationType {
     pub fn is_control_directive(&self) -> bool {
         matches!(
             self,
-            Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys
+            Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys | Self::BackfillComplete
         )
     }
 
@@ -219,6 +224,7 @@ impl std::fmt::Display for OperationType {
             Self::EnableForeignKeys => write!(f, "ENABLE_FOREIGN_KEYS"),
             Self::Ddl => write!(f, "DDL"),
             Self::DdlComplete => write!(f, "DDL_COMPLETE"),
+            Self::BackfillComplete => write!(f, "BACKFILL_COMPLETE"),
         }
     }
 }
