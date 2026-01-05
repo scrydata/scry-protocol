@@ -13,6 +13,7 @@ license = "MIT OR Apache-2.0"
 serde = { version = "1.0", features = ["derive"] }
 flexbuffers = "2.0"
 flatbuffers = "24.3"
+base64 = "0.22"
 
 # Event IDs and timestamps
 uuid = { version = "1.6", features = ["v4", "serde"] }
@@ -40,6 +41,7 @@ categories = ["database", "encoding"]
 serde = { workspace = true }
 flexbuffers = { workspace = true }
 flatbuffers = { workspace = true }
+base64 = { workspace = true }
 
 # Event IDs and timestamps
 uuid = { workspace = true }
