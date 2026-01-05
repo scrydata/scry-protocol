@@ -50,8 +50,10 @@ uuid = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 
-[dev-dependencies]
+# JSON for param serialization
 serde_json = { workspace = true }
+
+[dev-dependencies]
 
 [features]
 default = []

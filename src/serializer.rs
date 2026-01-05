@@ -23,6 +23,10 @@ struct SerializableEvent<'a> {
     event_id: &'a str,
     timestamp_us: u64,
     query: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    params: Vec<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    params_incomplete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     normalized_query: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,10 +75,19 @@ impl FlatBuffersSerializer {
         // Convert duration to microseconds
         let duration_us = event.duration.as_micros() as u64;
 
+        // Serialize params to JSON strings
+        let params: Vec<String> = event
+            .params
+            .iter()
+            .map(|p| serde_json::to_string(p).unwrap_or_default())
+            .collect();
+
         SerializableEvent {
             event_id: &event.event_id,
             timestamp_us,
             query: &event.query,
+            params,
+            params_incomplete: event.params_incomplete,
             normalized_query: event.normalized_query.as_deref(),
             value_fingerprints: event.value_fingerprints.as_deref(),
             duration_us,

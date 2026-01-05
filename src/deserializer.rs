@@ -1,4 +1,5 @@
 use crate::event::QueryEvent;
+use crate::ParamValue;
 use serde::Deserialize;
 use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
@@ -44,6 +45,10 @@ struct DeserializableEvent {
     event_id: String,
     timestamp_us: u64,
     query: String,
+    #[serde(default)]
+    params: Vec<String>,
+    #[serde(default)]
+    params_incomplete: bool,
     normalized_query: Option<String>,
     value_fingerprints: Option<Vec<String>>,
     duration_us: u64,
@@ -85,12 +90,19 @@ impl FlexBuffersDeserializer {
         // Convert duration from microseconds
         let duration = Duration::from_micros(event.duration_us);
 
+        // Parse params from JSON strings
+        let params: Vec<ParamValue> = event
+            .params
+            .iter()
+            .filter_map(|s| serde_json::from_str(s).ok())
+            .collect();
+
         Ok(QueryEvent {
             event_id: event.event_id,
             timestamp,
             query: event.query,
-            params: Vec::new(),  // Will be populated in Task 3
-            params_incomplete: false,
+            params,
+            params_incomplete: event.params_incomplete,
             normalized_query: event.normalized_query,
             value_fingerprints: event.value_fingerprints,
             duration,
@@ -247,5 +259,44 @@ mod tests {
         let invalid_bytes = vec![0, 1, 2, 3, 4];
         let result = FlexBuffersDeserializer::deserialize_batch(&invalid_bytes);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_params_serialization_roundtrip() {
+        use crate::ParamValue;
+
+        let event = QueryEventBuilder::new("SELECT * FROM users WHERE id = $1")
+            .params(vec![ParamValue::Int32(42), ParamValue::Text("alice".into())])
+            .duration(Duration::from_millis(5))
+            .connection_id("conn-1")
+            .database("testdb")
+            .build();
+
+        let bytes = FlatBuffersSerializer::serialize_batch(&[event], "test-proxy", 1);
+        let result = FlexBuffersDeserializer::deserialize_batch(&bytes).unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].params.len(), 2);
+        assert_eq!(result.events[0].params[0], ParamValue::Int32(42));
+        assert_eq!(result.events[0].params[1], ParamValue::Text("alice".into()));
+    }
+
+    #[test]
+    fn test_params_incomplete_roundtrip() {
+        use crate::ParamValue;
+
+        let event = QueryEventBuilder::new("SELECT * FROM users WHERE id = $1")
+            .params(vec![ParamValue::Unknown { oid: 0, data: vec![0x01] }])
+            .params_incomplete(true)
+            .duration(Duration::from_millis(5))
+            .connection_id("conn-1")
+            .database("testdb")
+            .build();
+
+        let bytes = FlatBuffersSerializer::serialize_batch(&[event], "test-proxy", 1);
+        let result = FlexBuffersDeserializer::deserialize_batch(&bytes).unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert!(result.events[0].params_incomplete);
     }
 }
