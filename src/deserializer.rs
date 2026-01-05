@@ -89,6 +89,8 @@ impl FlexBuffersDeserializer {
             event_id: event.event_id,
             timestamp,
             query: event.query,
+            params: Vec::new(),  // Will be populated in Task 3
+            params_incomplete: false,
             normalized_query: event.normalized_query,
             value_fingerprints: event.value_fingerprints,
             duration,

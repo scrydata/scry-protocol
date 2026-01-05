@@ -1,3 +1,4 @@
+use crate::ParamValue;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
@@ -12,6 +13,14 @@ pub struct QueryEvent {
 
     /// The SQL query text (raw if anonymization disabled, else same as normalized_query)
     pub query: String,
+
+    /// Query parameters from Bind message
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<ParamValue>,
+
+    /// True if params couldn't be fully decoded (cache miss)
+    #[serde(default)]
+    pub params_incomplete: bool,
 
     /// Normalized query with placeholders (if anonymization enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +55,8 @@ pub struct QueryEventBuilder {
     event_id: String,
     timestamp: SystemTime,
     query: String,
+    params: Vec<ParamValue>,
+    params_incomplete: bool,
     normalized_query: Option<String>,
     value_fingerprints: Option<Vec<String>>,
     duration: Option<Duration>,
@@ -62,6 +73,8 @@ impl QueryEventBuilder {
             event_id: uuid::Uuid::new_v4().to_string(),
             timestamp: SystemTime::now(),
             query: query.into(),
+            params: Vec::new(),
+            params_incomplete: false,
             normalized_query: None,
             value_fingerprints: None,
             duration: None,
@@ -71,6 +84,16 @@ impl QueryEventBuilder {
             database: String::from("unknown"),
             connection_id: String::from("unknown"),
         }
+    }
+
+    pub fn params(mut self, params: Vec<ParamValue>) -> Self {
+        self.params = params;
+        self
+    }
+
+    pub fn params_incomplete(mut self, incomplete: bool) -> Self {
+        self.params_incomplete = incomplete;
+        self
     }
 
     pub fn normalized_query(mut self, normalized_query: impl Into<String>) -> Self {
@@ -118,6 +141,8 @@ impl QueryEventBuilder {
             event_id: self.event_id,
             timestamp: self.timestamp,
             query: self.query,
+            params: self.params,
+            params_incomplete: self.params_incomplete,
             normalized_query: self.normalized_query,
             value_fingerprints: self.value_fingerprints,
             duration: self.duration.unwrap_or(Duration::from_millis(0)),
@@ -127,5 +152,31 @@ impl QueryEventBuilder {
             database: self.database,
             connection_id: self.connection_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ParamValue;
+
+    #[test]
+    fn test_query_event_with_params() {
+        let event = QueryEventBuilder::new("SELECT * FROM users WHERE id = $1")
+            .params(vec![ParamValue::Int32(42)])
+            .build();
+
+        assert_eq!(event.params.len(), 1);
+        assert!(!event.params_incomplete);
+    }
+
+    #[test]
+    fn test_query_event_params_incomplete() {
+        let event = QueryEventBuilder::new("SELECT * FROM users WHERE id = $1")
+            .params(vec![ParamValue::Unknown { oid: 0, data: vec![0x01] }])
+            .params_incomplete(true)
+            .build();
+
+        assert!(event.params_incomplete);
     }
 }
