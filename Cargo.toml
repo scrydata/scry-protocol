@@ -32,7 +32,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Event protocol for Scry SQL proxy - FlexBuffers serialization for query events"
-repository = "https://github.com/your-org/scry"
+repository = "https://github.com/scrydata/scry-protocol"
 keywords = ["sql", "proxy", "observability", "flatbuffers", "events"]
 categories = ["database", "encoding"]
 
