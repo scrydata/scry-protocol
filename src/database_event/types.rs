@@ -166,6 +166,10 @@ pub enum OperationType {
     // Backfill phase completed (control event from scry-backfill)
     // Contains table statistics for verification
     BackfillComplete = 35,
+
+    // Backfill phase starting (control event from scry-backfill)
+    // Contains estimated table/row counts for progress tracking
+    BackfillStart = 36,
 }
 
 impl OperationType {
@@ -188,6 +192,7 @@ impl OperationType {
             33 => Some(Self::Ddl),
             34 => Some(Self::DdlComplete),
             35 => Some(Self::BackfillComplete),
+            36 => Some(Self::BackfillStart),
             _ => None,
         }
     }
@@ -196,7 +201,8 @@ impl OperationType {
     pub fn is_control_directive(&self) -> bool {
         matches!(
             self,
-            Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys | Self::BackfillComplete
+            Self::SequenceSync | Self::DisableForeignKeys | Self::EnableForeignKeys
+                | Self::BackfillComplete | Self::BackfillStart
         )
     }
 
@@ -225,6 +231,7 @@ impl std::fmt::Display for OperationType {
             Self::Ddl => write!(f, "DDL"),
             Self::DdlComplete => write!(f, "DDL_COMPLETE"),
             Self::BackfillComplete => write!(f, "BACKFILL_COMPLETE"),
+            Self::BackfillStart => write!(f, "BACKFILL_START"),
         }
     }
 }
@@ -494,6 +501,18 @@ impl RelationMeta {
     }
 }
 
+/// Metadata about a backfill operation, sent with `BackfillStart` events.
+///
+/// Contains estimated table and row counts for progress tracking.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackfillMetadata {
+    /// Number of tables being backfilled.
+    pub table_count: u32,
+
+    /// Estimated total rows across all tables (from pg_class.reltuples).
+    pub estimated_total_rows: u64,
+}
+
 /// A single database event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DatabaseEvent {
@@ -588,6 +607,11 @@ pub struct DatabaseEventBatch {
     /// Present when control_directive is SyncSequences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence_values: Option<Vec<SequenceValue>>,
+
+    /// Backfill metadata for progress tracking.
+    /// Present when the batch contains a BackfillStart event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backfill_metadata: Option<BackfillMetadata>,
 }
 
 impl DatabaseEventBatch {
@@ -600,6 +624,7 @@ impl DatabaseEventBatch {
             relations: Vec::new(),
             control_directive: None,
             sequence_values: None,
+            backfill_metadata: None,
         }
     }
 
@@ -612,6 +637,7 @@ impl DatabaseEventBatch {
             relations: Vec::new(),
             control_directive: None,
             sequence_values: None,
+            backfill_metadata: None,
         }
     }
 
@@ -624,6 +650,7 @@ impl DatabaseEventBatch {
             relations: Vec::new(),
             control_directive: Some(directive),
             sequence_values: None,
+            backfill_metadata: None,
         }
     }
 
@@ -636,6 +663,7 @@ impl DatabaseEventBatch {
             relations: Vec::new(),
             control_directive: Some(ControlDirective::SyncSequences),
             sequence_values: Some(sequences),
+            backfill_metadata: None,
         }
     }
 
@@ -660,6 +688,12 @@ impl DatabaseEventBatch {
     /// Set sequence values.
     pub fn with_sequence_values(mut self, sequences: Vec<SequenceValue>) -> Self {
         self.sequence_values = Some(sequences);
+        self
+    }
+
+    /// Set backfill metadata for progress tracking.
+    pub fn with_backfill_metadata(mut self, metadata: BackfillMetadata) -> Self {
+        self.backfill_metadata = Some(metadata);
         self
     }
 

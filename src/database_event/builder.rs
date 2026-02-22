@@ -232,6 +232,7 @@ impl BatchBuilder {
             relations: std::mem::take(&mut self.relations),
             control_directive: None,
             sequence_values: None,
+            backfill_metadata: None,
         };
 
         self.batch_seq += 1;
